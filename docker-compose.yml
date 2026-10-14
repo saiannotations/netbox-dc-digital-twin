@@ -1,0 +1,105 @@
+version: "3.8"
+
+# NetBox digital twin stack for home-lab use.
+# Fill in the secrets in a local .env file (never commit it):
+#   POSTGRES_PASSWORD=...
+#   NETBOX_SECRET_KEY=<random 50+ char string>
+#   NETBOX_SUPERUSER_PASSWORD=...
+#   NETBOX_SUPERUSER_API_TOKEN=<token for NETBOX_TOKEN when running the seed script>
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: netbox-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-netbox}
+      POSTGRES_USER: ${POSTGRES_USER:-netbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - netbox-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-netbox}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: netbox-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - netbox-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  netbox:
+    image: netboxcommunity/netbox:v4.2
+    container_name: netbox
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8080"
+    environment:
+      # --- Database ---
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-netbox}
+      DB_USER: ${POSTGRES_USER:-netbox}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # --- Redis ---
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      # --- NetBox core ---
+      SECRET_KEY: ${NETBOX_SECRET_KEY:?set NETBOX_SECRET_KEY in .env}
+      ALLOWED_HOSTS: "localhost 127.0.0.1"
+      TIME_ZONE: America/Chicago
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: ${NETBOX_SUPERUSER_NAME:-admin}
+      SUPERUSER_EMAIL: ${NETBOX_SUPERUSER_EMAIL:-admin@example.com}
+      SUPERUSER_PASSWORD: ${NETBOX_SUPERUSER_PASSWORD:?set NETBOX_SUPERUSER_PASSWORD in .env}
+      SUPERUSER_API_TOKEN: ${NETBOX_SUPERUSER_API_TOKEN:?set NETBOX_SUPERUSER_API_TOKEN in .env}
+      # --- Housekeeping ---
+      HOUSEKEEPING_INTERVAL: "86400"
+      METRICS_ENABLED: "false"
+    volumes:
+      - netbox-media:/opt/netbox/netbox/media
+
+  netbox-worker:
+    image: netboxcommunity/netbox:v4.2
+    container_name: netbox-worker
+    restart: unless-stopped
+    depends_on:
+      netbox:
+        condition: service_started
+    working_dir: /opt/netbox/netbox
+    command: ["python", "manage.py", "rqworker", "high", "default", "low"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-netbox}
+      DB_USER: ${POSTGRES_USER:-netbox}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      SECRET_KEY: ${NETBOX_SECRET_KEY:?set NETBOX_SECRET_KEY in .env}
+      ALLOWED_HOSTS: "localhost 127.0.0.1"
+      TIME_ZONE: America/Chicago
+      SKIP_SUPERUSER: "true"
+    volumes:
+      - netbox-media:/opt/netbox/netbox/media
+
+volumes:
+  netbox-postgres-data:
+  netbox-redis-data:
+  netbox-media:
